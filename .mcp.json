@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "cmd",
+      "args": [
+        "/c",
+        "npx",
+        "-y",
+        "@playwright/mcp@latest",
+        "--config",
+        "C:/Users/luisg/projects/el-juego-de-la-sepia/playwright-mcp.config.json",
+        "--grant-permissions",
+        "camera"
+      ]
+    }
+  }
+}

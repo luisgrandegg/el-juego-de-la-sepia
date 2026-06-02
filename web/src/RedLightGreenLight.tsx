@@ -33,6 +33,8 @@ const GREEN_RANGE: [number, number] = [2.0, 5.0]; // seconds head faces away
 const RED_RANGE: [number, number] = [1.8, 4.0]; // seconds head faces the room
 const TURN_S = 0.65; // how long the head takes to swivel each way
 
+const DOLL_SCALE = 1.75; // size of the doll widget in the corner (1 = original)
+
 // Sounds in web/public/. Missing file = silent, no error.
 const START_MUSIC_URL = "/start.mp3"; // lobby loop until START
 const MOTION_SFX_URL = "/motion.mp3"; // loop while head swivels
@@ -691,6 +693,8 @@ function Doll({
         border: `2px solid ${GOLD}`,
         backdropFilter: "blur(2px)",
         textAlign: "center",
+        transform: `scale(${DOLL_SCALE})`,
+        transformOrigin: "top right",
       }}
     >
       <div style={{ perspective: 320, height: 64, display: "flex", justifyContent: "center", alignItems: "flex-end" }}>
