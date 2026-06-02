@@ -69,17 +69,22 @@ class Track {
   id: number;
   cx: number;
   cy: number;
+  hx: number; // head point (top-center of box), EMA-smoothed
+  hy: number;
   h: number;
   box: Box;
   eliminated = false;
   won = false;
-  ref: [number, number] | null = null;
+  ref: [number, number] | null = null; // frozen centroid at RED
+  headRef: [number, number] | null = null; // frozen head point at RED
   missed = 0;
 
   constructor(id: number, cx: number, cy: number, h: number, box: Box) {
     this.id = id;
     this.cx = cx;
     this.cy = cy;
+    this.hx = (box[0] + box[2]) / 2;
+    this.hy = box[1];
     this.h = h;
     this.box = box;
   }
@@ -87,6 +92,10 @@ class Track {
   update(cx: number, cy: number, h: number, box: Box) {
     this.cx = EMA_ALPHA * cx + (1 - EMA_ALPHA) * this.cx;
     this.cy = EMA_ALPHA * cy + (1 - EMA_ALPHA) * this.cy;
+    const hx = (box[0] + box[2]) / 2;
+    const hy = box[1];
+    this.hx = EMA_ALPHA * hx + (1 - EMA_ALPHA) * this.hx;
+    this.hy = EMA_ALPHA * hy + (1 - EMA_ALPHA) * this.hy;
     this.h = h;
     this.box = box;
     this.missed = 0;
@@ -135,6 +144,7 @@ class Tracker {
       t.eliminated = false;
       t.won = false;
       t.ref = null;
+      t.headRef = null;
     }
   }
 }
@@ -189,7 +199,11 @@ class Game {
           const [lo, hi] = RED_RANGE;
           this.until = t + lo + Math.random() * (hi - lo);
           // Snap the freeze reference the instant she is fully turned.
-          for (const tr of tracker.tracks) if (!tr.eliminated) tr.ref = [tr.cx, tr.cy];
+          for (const tr of tracker.tracks)
+            if (!tr.eliminated) {
+              tr.ref = [tr.cx, tr.cy];
+              tr.headRef = [tr.hx, tr.hy];
+            }
           onFullyRed();
         }
         break;
@@ -202,7 +216,10 @@ class Game {
       case "TO_GREEN":
         if (t - this.turnStart >= TURN_S) {
           this.enterGreen();
-          for (const tr of tracker.tracks) tr.ref = null;
+          for (const tr of tracker.tracks) {
+            tr.ref = null;
+            tr.headRef = null;
+          }
         }
         break;
     }
@@ -234,11 +251,16 @@ class Game {
         return;
       }
       if (this.phase !== "RED") continue; // only judged while fully turned
-      if (t.ref === null) {
+      if (t.ref === null || t.headRef === null) {
         t.ref = [t.cx, t.cy]; // newcomer mid-red gets a lenient reference
+        t.headRef = [t.hx, t.hy];
         continue;
       }
-      const disp = Math.hypot(t.cx - t.ref[0], t.cy - t.ref[1]);
+      // Body centroid barely moves when only the head does, so judge the head
+      // point (top-center of the box) too and eliminate on whichever moved more.
+      const bodyDisp = Math.hypot(t.cx - t.ref[0], t.cy - t.ref[1]);
+      const headDisp = Math.hypot(t.hx - t.headRef[0], t.hy - t.headRef[1]);
+      const disp = Math.max(bodyDisp, headDisp);
       if (t.h > 0 && disp / t.h > MOVE_THRESH) t.eliminated = true;
     }
   }
@@ -296,6 +318,75 @@ function stepParticles(particles: Particle[], dt: number) {
 }
 
 // ----------------------------------------------------------------------
+// FLYING TOMATO
+// A whole tomato is lobbed from the doll's corner and arcs across the
+// frame; the moment it lands on the eliminated face it bursts into the
+// splat above. The wind-up is the joke — keep ARC_TIME snappy.
+// ----------------------------------------------------------------------
+const ARC_GRAV = 900; // arc gravity (higher = flatter, faster-falling lob)
+const ARC_TIME = 0.42; // seconds of flight before impact
+
+interface Tomato {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  ttl: number; // seconds until impact
+  scale: number;
+  spin: number;
+  vspin: number;
+}
+
+function launchTomato(tomatoes: Tomato[], sx: number, sy: number, tx: number, ty: number, scale: number) {
+  // Solve for the velocity that lands exactly on (tx,ty) after ARC_TIME.
+  const vx = (tx - sx) / ARC_TIME;
+  const vy = (ty - sy) / ARC_TIME - 0.5 * ARC_GRAV * ARC_TIME;
+  tomatoes.push({ x: sx, y: sy, vx, vy, ttl: ARC_TIME, scale, spin: 0, vspin: (Math.random() * 2 - 1) * 18 });
+}
+
+function stepTomatoes(tomatoes: Tomato[], dt: number, onImpact: (x: number, y: number, scale: number) => void) {
+  for (const tm of tomatoes) {
+    tm.ttl -= dt;
+    tm.vy += ARC_GRAV * dt;
+    tm.x += tm.vx * dt;
+    tm.y += tm.vy * dt;
+    tm.spin += tm.vspin * dt;
+    if (tm.ttl <= 0) onImpact(tm.x, tm.y, tm.scale);
+  }
+  let w = 0;
+  for (let r = 0; r < tomatoes.length; r++) {
+    if (tomatoes[r].ttl > 0) tomatoes[w++] = tomatoes[r];
+  }
+  tomatoes.length = w;
+}
+
+function drawTomato(ctx: CanvasRenderingContext2D, tm: Tomato) {
+  const r = 10 * tm.scale;
+  ctx.save();
+  ctx.translate(tm.x, tm.y);
+  ctx.rotate(tm.spin);
+  // body
+  ctx.fillStyle = TOMATO;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+  // glossy highlight
+  ctx.fillStyle = "rgba(255,255,255,0.35)";
+  ctx.beginPath();
+  ctx.arc(-r * 0.3, -r * 0.3, r * 0.3, 0, Math.PI * 2);
+  ctx.fill();
+  // little green stem/leaf
+  ctx.fillStyle = GUARD;
+  ctx.beginPath();
+  ctx.moveTo(0, -r * 1.35);
+  ctx.lineTo(-r * 0.55, -r * 0.85);
+  ctx.lineTo(r * 0.55, -r * 0.85);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+// ----------------------------------------------------------------------
 // COMPONENT
 // ----------------------------------------------------------------------
 export default function RedLightGreenLight() {
@@ -318,12 +409,14 @@ export default function RedLightGreenLight() {
   const sfxRef = useRef<HTMLAudioElement | null>(null);
   const audioReadyRef = useRef(false);
 
-  // tomato splats + which players have already burst
+  // tomato splats + in-flight tomatoes + which players have already burst
   const particlesRef = useRef<Particle[]>([]);
+  const tomatoesRef = useRef<Tomato[]>([]);
   const burstRef = useRef<Set<number>>(new Set());
 
   function resetFx() {
     particlesRef.current.length = 0;
+    tomatoesRef.current.length = 0;
     burstRef.current.clear();
   }
 
@@ -535,18 +628,21 @@ export default function RedLightGreenLight() {
         if (game.winner !== null) playStartMusic();
       }
 
-      // newly-eliminated players burst a tomato
+      // newly-eliminated players get a tomato lobbed at them from the doll's corner
       for (const t of tracker.tracks) {
         if (t.eliminated && !burstRef.current.has(t.id)) {
           burstRef.current.add(t.id);
           const [x1, y1, x2, y2] = t.box;
           const cx = W - (x1 + x2) / 2;
           const cy = y1 + (y2 - y1) * 0.28;
-          spawnSplat(particlesRef.current, cx, cy, Math.max(0.7, (x2 - x1) / 120));
+          launchTomato(tomatoesRef.current, W * 0.94, H * 0.12, cx, cy, Math.max(0.7, (x2 - x1) / 120));
         }
       }
 
       for (const t of tracker.tracks) drawTrack(t, W);
+
+      // in-flight tomatoes burst into the splat the instant they land
+      stepTomatoes(tomatoesRef.current, dt, (x, y, scale) => spawnSplat(particlesRef.current, x, y, scale));
 
       // tomato particles on top of the boxes
       stepParticles(particlesRef.current, dt);
@@ -558,6 +654,9 @@ export default function RedLightGreenLight() {
         ctx.fill();
       }
       ctx.globalAlpha = 1;
+
+      // the lobbed tomatoes ride on top of everything until impact
+      for (const tm of tomatoesRef.current) drawTomato(ctx, tm);
 
       // drive the doll's head (DOM, smooth every frame)
       const hf = game.running ? game.headFacing() : 0;
