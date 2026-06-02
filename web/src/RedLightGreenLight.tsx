@@ -25,7 +25,7 @@ const DETECT_INTERVAL_MS = 120; // throttle detection; draw runs every frame
 
 const MOVE_THRESH = 0.04; // eliminate if moved more than this * body height
 const WIN_RATIO = 0.85; // box height / frame height that counts as "reached camera"
-const EMA_ALPHA = 0.9; // centroid smoothing (higher = snappier, more jitter)
+const EMA_ALPHA = 0.8; // centroid smoothing (higher = snappier, more jitter)
 const MATCH_FRAC = 0.18; // max match distance between frames, fraction of diagonal
 const MAX_MISSED = 12; // drop a track after this many missed detections
 
