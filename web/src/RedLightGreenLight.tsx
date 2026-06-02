@@ -356,6 +356,15 @@ export default function RedLightGreenLight() {
     a.currentTime = 0;
   }
 
+  function playShootSfx() {
+    stopMotion();
+    const a = sfxRef.current;
+    if (!a || !audioReadyRef.current) return;
+    a.pause();
+    a.currentTime = 0;
+    a.play().catch(() => {});
+  }
+
   function syncMotionAudio(phase: Phase, running: boolean) {
     const motion = motionRef.current;
     if (!motion || !audioReadyRef.current) return;
@@ -484,6 +493,14 @@ export default function RedLightGreenLight() {
 
       ctx.clearRect(0, 0, W, H);
 
+      // Phase clock + audio must run every frame (head animation does too).
+      game.tick(tracker, playShootSfx);
+      if (game.running) syncMotionAudio(game.phase, true);
+      else {
+        stopMotion();
+        if (game.winner !== null) playStartMusic();
+      }
+
       // newly-eliminated players burst a tomato
       for (const t of tracker.tracks) {
         if (t.eliminated && !burstRef.current.has(t.id)) {
@@ -560,20 +577,6 @@ export default function RedLightGreenLight() {
             const { w, h } = dimsRef.current;
             const diag = Math.hypot(w, h);
             trackerRef.current.update(dets, diag);
-            gameRef.current.tick(trackerRef.current, () => {
-              stopMotion();
-              const a = sfxRef.current;
-              if (a) {
-                a.currentTime = 0;
-                a.play().catch(() => {}); // missing file / not unlocked => silent
-              }
-            });
-            const game = gameRef.current;
-            if (game.running) syncMotionAudio(game.phase, true);
-            else {
-              stopMotion();
-              if (game.winner !== null) playStartMusic();
-            }
             gameRef.current.judge(trackerRef.current, h);
           })
           .catch(() => {})
