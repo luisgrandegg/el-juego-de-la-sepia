@@ -35,9 +35,6 @@ const TURN_S = 0.65; // how long the head takes to swivel each way
 
 const DOLL_SCALE = 1.75; // size of the doll widget in the corner (1 = original)
 
-const PIXEL_W = 160; // pixel-art layer: camera is downsampled to this width, then
-//                      scaled back up with smoothing off. Lower = chunkier pixels.
-
 // Sounds in web/public/. Missing file = silent, no error.
 const START_MUSIC_URL = "/start.mp3"; // lobby loop until START
 const MOTION_SFX_URL = "/motion.mp3"; // loop while head swivels
@@ -326,6 +323,75 @@ function stepParticles(particles: Particle[], dt: number) {
 }
 
 // ----------------------------------------------------------------------
+// FLYING TOMATO
+// A whole tomato is lobbed from the doll's corner and arcs across the
+// frame; the moment it lands on the eliminated face it bursts into the
+// splat above. The wind-up is the joke — keep ARC_TIME snappy.
+// ----------------------------------------------------------------------
+const ARC_GRAV = 900; // arc gravity (higher = flatter, faster-falling lob)
+const ARC_TIME = 0.42; // seconds of flight before impact
+
+interface Tomato {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  ttl: number; // seconds until impact
+  scale: number;
+  spin: number;
+  vspin: number;
+}
+
+function launchTomato(tomatoes: Tomato[], sx: number, sy: number, tx: number, ty: number, scale: number) {
+  // Solve for the velocity that lands exactly on (tx,ty) after ARC_TIME.
+  const vx = (tx - sx) / ARC_TIME;
+  const vy = (ty - sy) / ARC_TIME - 0.5 * ARC_GRAV * ARC_TIME;
+  tomatoes.push({ x: sx, y: sy, vx, vy, ttl: ARC_TIME, scale, spin: 0, vspin: (Math.random() * 2 - 1) * 18 });
+}
+
+function stepTomatoes(tomatoes: Tomato[], dt: number, onImpact: (x: number, y: number, scale: number) => void) {
+  for (const tm of tomatoes) {
+    tm.ttl -= dt;
+    tm.vy += ARC_GRAV * dt;
+    tm.x += tm.vx * dt;
+    tm.y += tm.vy * dt;
+    tm.spin += tm.vspin * dt;
+    if (tm.ttl <= 0) onImpact(tm.x, tm.y, tm.scale);
+  }
+  let w = 0;
+  for (let r = 0; r < tomatoes.length; r++) {
+    if (tomatoes[r].ttl > 0) tomatoes[w++] = tomatoes[r];
+  }
+  tomatoes.length = w;
+}
+
+function drawTomato(ctx: CanvasRenderingContext2D, tm: Tomato) {
+  const r = 10 * tm.scale;
+  ctx.save();
+  ctx.translate(tm.x, tm.y);
+  ctx.rotate(tm.spin);
+  // body
+  ctx.fillStyle = TOMATO;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+  // glossy highlight
+  ctx.fillStyle = "rgba(255,255,255,0.35)";
+  ctx.beginPath();
+  ctx.arc(-r * 0.3, -r * 0.3, r * 0.3, 0, Math.PI * 2);
+  ctx.fill();
+  // little green stem/leaf
+  ctx.fillStyle = GUARD;
+  ctx.beginPath();
+  ctx.moveTo(0, -r * 1.35);
+  ctx.lineTo(-r * 0.55, -r * 0.85);
+  ctx.lineTo(r * 0.55, -r * 0.85);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+// ----------------------------------------------------------------------
 // COMPONENT
 // ----------------------------------------------------------------------
 export default function RedLightGreenLight() {
@@ -337,7 +403,6 @@ export default function RedLightGreenLight() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const capRef = useRef<HTMLCanvasElement | null>(null);
-  const pixRef = useRef<HTMLCanvasElement | null>(null);
   const trackerRef = useRef(new Tracker());
   const gameRef = useRef(new Game());
   const dimsRef = useRef({ w: CAPTURE_W, h: Math.round((CAPTURE_W * 3) / 4) });
@@ -351,12 +416,14 @@ export default function RedLightGreenLight() {
   const sfxRef = useRef<HTMLAudioElement | null>(null);
   const audioReadyRef = useRef(false);
 
-  // tomato splats + which players have already burst
+  // tomato splats + in-flight tomatoes + which players have already burst
   const particlesRef = useRef<Particle[]>([]);
+  const tomatoesRef = useRef<Tomato[]>([]);
   const burstRef = useRef<Set<number>>(new Set());
 
   function resetFx() {
     particlesRef.current.length = 0;
+    tomatoesRef.current.length = 0;
     burstRef.current.clear();
   }
 
@@ -510,9 +577,6 @@ export default function RedLightGreenLight() {
     if (!capRef.current) capRef.current = document.createElement("canvas");
     const cap = capRef.current;
     const capCtx = cap.getContext("2d")!;
-    if (!pixRef.current) pixRef.current = document.createElement("canvas");
-    const pix = pixRef.current;
-    const pixCtx = pix.getContext("2d")!;
 
     let raf = 0;
     let stream: MediaStream | null = null;
@@ -542,8 +606,6 @@ export default function RedLightGreenLight() {
       cap.height = h;
       canvas.width = CAPTURE_W;
       canvas.height = h;
-      pix.width = PIXEL_W;
-      pix.height = Math.max(1, Math.round((PIXEL_W * h) / CAPTURE_W));
     };
 
     async function detect(): Promise<ParsedDet[]> {
@@ -612,18 +674,6 @@ export default function RedLightGreenLight() {
 
       ctx.clearRect(0, 0, W, H);
 
-      // Pixel-art layer: downsample the (mirrored) camera into a tiny buffer,
-      // then blit it back up to full size with smoothing off for chunky pixels.
-      if (video.readyState >= 2) {
-        pixCtx.save();
-        pixCtx.scale(-1, 1); // mirror to match the overlay's W - x coords
-        pixCtx.drawImage(video, -pix.width, 0, pix.width, pix.height);
-        pixCtx.restore();
-        ctx.imageSmoothingEnabled = false;
-        ctx.drawImage(pix, 0, 0, W, H);
-        ctx.imageSmoothingEnabled = true;
-      }
-
       // Phase clock + audio must run every frame (head animation does too).
       game.tick(tracker, playShootSfx);
       if (game.winner !== null && reportedWinnerRef.current !== game.winner) {
@@ -644,15 +694,17 @@ export default function RedLightGreenLight() {
         if (game.winner !== null) playStartMusic();
       }
 
-      // newly-eliminated players burst a tomato
+      // newly-eliminated players get a tomato lobbed at them from the doll's corner
       for (const t of tracker.tracks) {
         if (t.eliminated && !burstRef.current.has(t.id)) {
           burstRef.current.add(t.id);
           const [x1, y1, x2, y2] = t.box;
           const cx = W - (x1 + x2) / 2;
           const cy = y1 + (y2 - y1) * 0.28;
-          spawnSplat(
-            particlesRef.current,
+          launchTomato(
+            tomatoesRef.current,
+            W * 0.94,
+            H * 0.12,
             cx,
             cy,
             Math.max(0.7, (x2 - x1) / 120),
@@ -661,6 +713,11 @@ export default function RedLightGreenLight() {
       }
 
       for (const t of tracker.tracks) drawTrack(t, W);
+
+      // in-flight tomatoes burst into the splat the instant they land
+      stepTomatoes(tomatoesRef.current, dt, (x, y, scale) =>
+        spawnSplat(particlesRef.current, x, y, scale),
+      );
 
       // tomato particles on top of the boxes
       stepParticles(particlesRef.current, dt);
@@ -672,6 +729,9 @@ export default function RedLightGreenLight() {
         ctx.fill();
       }
       ctx.globalAlpha = 1;
+
+      // the lobbed tomatoes ride on top of everything until impact
+      for (const tm of tomatoesRef.current) drawTomato(ctx, tm);
 
       // drive the doll's head (DOM, smooth every frame)
       const hf = game.running ? game.headFacing() : 0;
@@ -811,7 +871,6 @@ export default function RedLightGreenLight() {
           inset: 0,
           width: "100%",
           height: "100%",
-          imageRendering: "pixelated",
         }}
       />
 
