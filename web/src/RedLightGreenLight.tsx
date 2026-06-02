@@ -14,7 +14,7 @@
  * before the demo — a threshold tuned solo is always too strict for a group.
  */
 
-import { useEffect, useRef, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 // ----------------------------------------------------------------------
 // CONFIG
@@ -299,6 +299,9 @@ function stepParticles(particles: Particle[], dt: number) {
 // COMPONENT
 // ----------------------------------------------------------------------
 export default function RedLightGreenLight() {
+  const [introVisible, setIntroVisible] = useState(true);
+  const [showSideControls, setShowSideControls] = useState(false);
+  const reportedWinnerRef = useRef<number | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const capRef = useRef<HTMLCanvasElement | null>(null);
@@ -351,6 +354,31 @@ export default function RedLightGreenLight() {
     a.play().catch(() => {});
   }
 
+  function dismissIntro() {
+    setIntroVisible(false);
+  }
+
+  function activateIntroMusic() {
+    if (!audioReadyRef.current) unlockAllAudio();
+    playStartMusic();
+  }
+
+  function beginRound() {
+    if (!audioReadyRef.current) unlockAllAudio();
+    stopStartMusic();
+    stopMotion();
+    resetFx();
+    trackerRef.current.reset();
+    reportedWinnerRef.current = null;
+    setShowSideControls(false);
+    gameRef.current.start();
+  }
+
+  function handleStartFromIntro() {
+    dismissIntro();
+    beginRound();
+  }
+
   function stopMotion() {
     const a = motionRef.current;
     if (!a) return;
@@ -382,14 +410,8 @@ export default function RedLightGreenLight() {
     }
   }
 
+  // Audio elements live for the whole session (intro + game).
   useEffect(() => {
-    const video = videoRef.current!;
-    const canvas = canvasRef.current!;
-    const ctx = canvas.getContext("2d")!;
-    if (!capRef.current) capRef.current = document.createElement("canvas");
-    const cap = capRef.current;
-    const capCtx = cap.getContext("2d")!;
-
     startMusicRef.current = new Audio(START_MUSIC_URL);
     startMusicRef.current.preload = "auto";
     startMusicRef.current.loop = true;
@@ -401,13 +423,19 @@ export default function RedLightGreenLight() {
     sfxRef.current = new Audio(DOLL_SFX_URL);
     sfxRef.current.preload = "auto";
 
-    function onFirstGesture() {
-      if (audioReadyRef.current) return;
-      unlockAllAudio();
-      playStartMusic();
-    }
-    document.addEventListener("click", onFirstGesture);
-    document.addEventListener("keydown", onFirstGesture);
+    return () => {
+      stopStartMusic();
+      stopMotion();
+    };
+  }, []);
+
+  useEffect(() => {
+    const video = videoRef.current!;
+    const canvas = canvasRef.current!;
+    const ctx = canvas.getContext("2d")!;
+    if (!capRef.current) capRef.current = document.createElement("canvas");
+    const cap = capRef.current;
+    const capCtx = cap.getContext("2d")!;
 
     let raf = 0;
     let stream: MediaStream | null = null;
@@ -497,6 +525,10 @@ export default function RedLightGreenLight() {
 
       // Phase clock + audio must run every frame (head animation does too).
       game.tick(tracker, playShootSfx);
+      if (game.winner !== null && reportedWinnerRef.current !== game.winner) {
+        reportedWinnerRef.current = game.winner;
+        setShowSideControls(true);
+      }
       if (game.running) syncMotionAudio(game.phase, true);
       else {
         stopMotion();
@@ -595,20 +627,13 @@ export default function RedLightGreenLight() {
       stopped = true;
       cancelAnimationFrame(raf);
       stream?.getTracks().forEach((tr) => tr.stop());
-      document.removeEventListener("click", onFirstGesture);
-      document.removeEventListener("keydown", onFirstGesture);
-      stopStartMusic();
       stopMotion();
     };
   }, []);
 
   function handleStart() {
-    if (!audioReadyRef.current) unlockAllAudio();
-    stopStartMusic();
-    stopMotion();
-    resetFx();
-    trackerRef.current.reset();
-    gameRef.current.start();
+    if (introVisible) dismissIntro();
+    beginRound();
   }
 
   function handleRevive() {
@@ -617,6 +642,8 @@ export default function RedLightGreenLight() {
     trackerRef.current.reset();
     gameRef.current.running = false;
     gameRef.current.winner = null;
+    reportedWinnerRef.current = null;
+    setShowSideControls(true);
     playStartMusic();
   }
 
@@ -640,20 +667,18 @@ export default function RedLightGreenLight() {
       />
       <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} />
 
-      {/* The doll, watching from the corner */}
       <Doll headRef={headRef} eyesRef={eyesRef} />
 
-      {/* Floating controls, left edge */}
       <div
         style={{
           position: "absolute",
           left: 16,
           top: "50%",
           transform: "translateY(-50%)",
-          display: "flex",
           flexDirection: "column",
           gap: 12,
           zIndex: 5,
+          display: showSideControls && !introVisible ? "flex" : "none",
         }}
       >
         <button onClick={handleStart} style={btn(PINK)}>
@@ -663,6 +688,90 @@ export default function RedLightGreenLight() {
           REVIVE ALL
         </button>
       </div>
+
+      {introVisible && <IntroSplash onActivateMusic={activateIntroMusic} onStart={handleStartFromIntro} />}
+    </div>
+  );
+}
+
+function IntroSplash({
+  onActivateMusic,
+  onStart,
+}: {
+  readonly onActivateMusic: () => void;
+  readonly onStart: () => void;
+}) {
+  return (
+    <div
+      role="dialog"
+      aria-labelledby="intro-title"
+      onPointerDown={onActivateMusic}
+      style={{
+        cursor: "pointer",
+        position: "absolute",
+        inset: 0,
+        zIndex: 20,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 28,
+        padding: 32,
+        background: `radial-gradient(ellipse 80% 60% at 50% 40%, rgba(237,27,118,0.22), transparent), linear-gradient(165deg, ${INK} 0%, #1a1510 45%, ${INK} 100%)`,
+        textAlign: "center",
+      }}
+    >
+      <p
+        style={{
+          margin: 0,
+          fontSize: 11,
+          letterSpacing: 4,
+          textTransform: "uppercase",
+          color: GOLD,
+          fontWeight: 700,
+        }}
+      >
+        Cursor Madrid Hackathon
+      </p>
+      <h1
+        id="intro-title"
+        style={{
+          margin: 0,
+          maxWidth: "min(92vw, 720px)",
+          fontSize: "clamp(2.2rem, 8vw, 4.5rem)",
+          fontWeight: 800,
+          lineHeight: 1.05,
+          letterSpacing: "-0.02em",
+          color: PAPER,
+          textShadow: `0 0 40px rgba(255,200,61,0.35)`,
+        }}
+      >
+        el juego de la sepia
+      </h1>
+      <p
+        style={{
+          margin: 0,
+          maxWidth: 420,
+          fontSize: "clamp(0.95rem, 2.5vw, 1.15rem)",
+          lineHeight: 1.5,
+          color: "rgba(243,241,234,0.75)",
+        }}
+      >
+        Luz verde: acércate a la cámara. Luz roja: no te muevas. Si la muñeca te pilla, tomate en la cara.
+      </p>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onStart();
+        }}
+        style={{ ...btn(PINK), marginTop: 8, fontSize: 16, padding: "14px 36px", cursor: "pointer" }}
+      >
+        START
+      </button>
+      <p style={{ margin: 0, fontSize: 12, color: "rgba(243,241,234,0.45)" }}>
+        Toca la pantalla para activar la música · START para jugar
+      </p>
     </div>
   );
 }
