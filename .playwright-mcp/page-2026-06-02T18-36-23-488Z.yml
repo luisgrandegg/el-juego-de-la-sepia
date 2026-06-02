@@ -1,0 +1,5 @@
+- generic [ref=e3]:
+  - generic [ref=e22]: YOUNG-HEE
+  - generic [ref=e23]:
+    - button "START / RESTART" [active] [ref=e24] [cursor=pointer]
+    - button "REVIVE ALL" [ref=e25] [cursor=pointer]
