@@ -35,6 +35,9 @@ const TURN_S = 0.65; // how long the head takes to swivel each way
 
 const DOLL_SCALE = 1.75; // size of the doll widget in the corner (1 = original)
 
+const PIXEL_W = 160; // pixel-art layer: camera is downsampled to this width, then
+//                      scaled back up with smoothing off. Lower = chunkier pixels.
+
 // Sounds in web/public/. Missing file = silent, no error.
 const START_MUSIC_URL = "/start.mp3"; // lobby loop until START
 const MOTION_SFX_URL = "/motion.mp3"; // loop while head swivels
@@ -69,17 +72,22 @@ class Track {
   id: number;
   cx: number;
   cy: number;
+  hx: number; // head point (top-center of box), EMA-smoothed
+  hy: number;
   h: number;
   box: Box;
   eliminated = false;
   won = false;
-  ref: [number, number] | null = null;
+  ref: [number, number] | null = null; // frozen centroid at RED
+  headRef: [number, number] | null = null; // frozen head point at RED
   missed = 0;
 
   constructor(id: number, cx: number, cy: number, h: number, box: Box) {
     this.id = id;
     this.cx = cx;
     this.cy = cy;
+    this.hx = (box[0] + box[2]) / 2;
+    this.hy = box[1];
     this.h = h;
     this.box = box;
   }
@@ -87,6 +95,10 @@ class Track {
   update(cx: number, cy: number, h: number, box: Box) {
     this.cx = EMA_ALPHA * cx + (1 - EMA_ALPHA) * this.cx;
     this.cy = EMA_ALPHA * cy + (1 - EMA_ALPHA) * this.cy;
+    const hx = (box[0] + box[2]) / 2;
+    const hy = box[1];
+    this.hx = EMA_ALPHA * hx + (1 - EMA_ALPHA) * this.hx;
+    this.hy = EMA_ALPHA * hy + (1 - EMA_ALPHA) * this.hy;
     this.h = h;
     this.box = box;
     this.missed = 0;
@@ -135,6 +147,7 @@ class Tracker {
       t.eliminated = false;
       t.won = false;
       t.ref = null;
+      t.headRef = null;
     }
   }
 }
@@ -189,7 +202,11 @@ class Game {
           const [lo, hi] = RED_RANGE;
           this.until = t + lo + Math.random() * (hi - lo);
           // Snap the freeze reference the instant she is fully turned.
-          for (const tr of tracker.tracks) if (!tr.eliminated) tr.ref = [tr.cx, tr.cy];
+          for (const tr of tracker.tracks)
+            if (!tr.eliminated) {
+              tr.ref = [tr.cx, tr.cy];
+              tr.headRef = [tr.hx, tr.hy];
+            }
           onFullyRed();
         }
         break;
@@ -202,7 +219,10 @@ class Game {
       case "TO_GREEN":
         if (t - this.turnStart >= TURN_S) {
           this.enterGreen();
-          for (const tr of tracker.tracks) tr.ref = null;
+          for (const tr of tracker.tracks) {
+            tr.ref = null;
+            tr.headRef = null;
+          }
         }
         break;
     }
@@ -234,11 +254,16 @@ class Game {
         return;
       }
       if (this.phase !== "RED") continue; // only judged while fully turned
-      if (t.ref === null) {
+      if (t.ref === null || t.headRef === null) {
         t.ref = [t.cx, t.cy]; // newcomer mid-red gets a lenient reference
+        t.headRef = [t.hx, t.hy];
         continue;
       }
-      const disp = Math.hypot(t.cx - t.ref[0], t.cy - t.ref[1]);
+      // Body centroid barely moves when only the head does, so judge the head
+      // point (top-center of the box) too and eliminate on whichever moved more.
+      const bodyDisp = Math.hypot(t.cx - t.ref[0], t.cy - t.ref[1]);
+      const headDisp = Math.hypot(t.hx - t.headRef[0], t.hy - t.headRef[1]);
+      const disp = Math.max(bodyDisp, headDisp);
       if (t.h > 0 && disp / t.h > MOVE_THRESH) t.eliminated = true;
     }
   }
@@ -305,6 +330,7 @@ export default function RedLightGreenLight() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const capRef = useRef<HTMLCanvasElement | null>(null);
+  const pixRef = useRef<HTMLCanvasElement | null>(null);
   const trackerRef = useRef(new Tracker());
   const gameRef = useRef(new Game());
   const dimsRef = useRef({ w: CAPTURE_W, h: Math.round((CAPTURE_W * 3) / 4) });
@@ -436,6 +462,9 @@ export default function RedLightGreenLight() {
     if (!capRef.current) capRef.current = document.createElement("canvas");
     const cap = capRef.current;
     const capCtx = cap.getContext("2d")!;
+    if (!pixRef.current) pixRef.current = document.createElement("canvas");
+    const pix = pixRef.current;
+    const pixCtx = pix.getContext("2d")!;
 
     let raf = 0;
     let stream: MediaStream | null = null;
@@ -465,6 +494,8 @@ export default function RedLightGreenLight() {
       cap.height = h;
       canvas.width = CAPTURE_W;
       canvas.height = h;
+      pix.width = PIXEL_W;
+      pix.height = Math.max(1, Math.round((PIXEL_W * h) / CAPTURE_W));
     };
 
     async function detect(): Promise<ParsedDet[]> {
@@ -522,6 +553,18 @@ export default function RedLightGreenLight() {
       lastFrame = tn;
 
       ctx.clearRect(0, 0, W, H);
+
+      // Pixel-art layer: downsample the (mirrored) camera into a tiny buffer,
+      // then blit it back up to full size with smoothing off for chunky pixels.
+      if (video.readyState >= 2) {
+        pixCtx.save();
+        pixCtx.scale(-1, 1); // mirror to match the overlay's W - x coords
+        pixCtx.drawImage(video, -pix.width, 0, pix.width, pix.height);
+        pixCtx.restore();
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(pix, 0, 0, W, H);
+        ctx.imageSmoothingEnabled = true;
+      }
 
       // Phase clock + audio must run every frame (head animation does too).
       game.tick(tracker, playShootSfx);
@@ -665,7 +708,7 @@ export default function RedLightGreenLight() {
         muted
         style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }}
       />
-      <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} />
+      <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", imageRendering: "pixelated" }} />
 
       <Doll headRef={headRef} eyesRef={eyesRef} />
 
