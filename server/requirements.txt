@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+pillow
+
+# NOTE: libreyolo is installed separately via the hackathon track setup
+# (editable from source: git clone -b dev https://github.com/Libre-YOLO/libreyolo
+# && pip install -e .). It is NOT listed here on purpose — you already have it.
