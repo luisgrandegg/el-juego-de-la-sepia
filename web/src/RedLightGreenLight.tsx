@@ -325,8 +325,10 @@ function stepParticles(particles: Particle[], dt: number) {
 // ----------------------------------------------------------------------
 export default function RedLightGreenLight() {
   const [introVisible, setIntroVisible] = useState(true);
+  const introVisibleRef = useRef(true);
   const [showSideControls, setShowSideControls] = useState(false);
   const reportedWinnerRef = useRef<number | null>(null);
+  const allEliminatedHandledRef = useRef(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const capRef = useRef<HTMLCanvasElement | null>(null);
@@ -373,20 +375,46 @@ export default function RedLightGreenLight() {
     a.currentTime = 0;
   }
 
-  function playStartMusic() {
+  function playIntroMusic() {
+    const a = startMusicRef.current;
+    if (!a || !introVisibleRef.current || gameRef.current.running) return;
     if (!audioReadyRef.current) return;
+    if (a.paused) a.play().catch(() => {});
+  }
+
+  function playStartMusic() {
+    if (!audioReadyRef.current || introVisibleRef.current) return;
     const a = startMusicRef.current;
     if (!a || gameRef.current.running) return;
-    a.play().catch(() => {});
+    if (a.paused) a.play().catch(() => {});
+  }
+
+  function setIntroShown(shown: boolean) {
+    introVisibleRef.current = shown;
+    setIntroVisible(shown);
   }
 
   function dismissIntro() {
-    setIntroVisible(false);
+    setIntroShown(false);
   }
 
-  function activateIntroMusic() {
+  function unlockIntroMusic() {
     if (!audioReadyRef.current) unlockAllAudio();
-    playStartMusic();
+    playIntroMusic();
+  }
+
+  function returnToIntro() {
+    if (allEliminatedHandledRef.current) return;
+    allEliminatedHandledRef.current = true;
+    gameRef.current.running = false;
+    gameRef.current.winner = null;
+    reportedWinnerRef.current = null;
+    stopMotion();
+    resetFx();
+    trackerRef.current.reset();
+    setShowSideControls(false);
+    setIntroShown(true);
+    unlockIntroMusic();
   }
 
   function beginRound() {
@@ -396,6 +424,7 @@ export default function RedLightGreenLight() {
     resetFx();
     trackerRef.current.reset();
     reportedWinnerRef.current = null;
+    allEliminatedHandledRef.current = false;
     setShowSideControls(false);
     gameRef.current.start();
   }
@@ -454,6 +483,16 @@ export default function RedLightGreenLight() {
       stopMotion();
     };
   }, []);
+
+  // Keep start.mp3 playing whenever the intro is on screen (after audio is unlocked).
+  useEffect(() => {
+    if (!introVisible) return;
+    playIntroMusic();
+    const retry = window.setInterval(() => {
+      if (introVisibleRef.current) playIntroMusic();
+    }, 400);
+    return () => window.clearInterval(retry);
+  }, [introVisible]);
 
   useEffect(() => {
     const video = videoRef.current!;
@@ -572,6 +611,14 @@ export default function RedLightGreenLight() {
         reportedWinnerRef.current = game.winner;
         setShowSideControls(true);
       }
+      if (
+        game.running &&
+        game.winner === null &&
+        tracker.tracks.length > 0 &&
+        tracker.tracks.every((t) => t.eliminated)
+      ) {
+        returnToIntro();
+      }
       if (game.running) syncMotionAudio(game.phase, true);
       else {
         stopMotion();
@@ -686,6 +733,7 @@ export default function RedLightGreenLight() {
     gameRef.current.running = false;
     gameRef.current.winner = null;
     reportedWinnerRef.current = null;
+    allEliminatedHandledRef.current = false;
     setShowSideControls(true);
     playStartMusic();
   }
@@ -732,7 +780,7 @@ export default function RedLightGreenLight() {
         </button>
       </div>
 
-      {introVisible && <IntroSplash onActivateMusic={activateIntroMusic} onStart={handleStartFromIntro} />}
+      {introVisible && <IntroSplash onActivateMusic={unlockIntroMusic} onStart={handleStartFromIntro} />}
     </div>
   );
 }
@@ -813,7 +861,7 @@ function IntroSplash({
         START
       </button>
       <p style={{ margin: 0, fontSize: 12, color: "rgba(243,241,234,0.45)" }}>
-        Toca la pantalla para activar la música · START para jugar
+        Toca la pantalla si no oyes la música · START para jugar
       </p>
     </div>
   );
