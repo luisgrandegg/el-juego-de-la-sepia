@@ -33,9 +33,10 @@ const GREEN_RANGE: [number, number] = [2.0, 5.0]; // seconds head faces away
 const RED_RANGE: [number, number] = [1.8, 4.0]; // seconds head faces the room
 const TURN_S = 0.65; // how long the head takes to swivel each way
 
-// Sound played the instant her head finishes turning to the front (RED).
-// Lives in web/public/. Missing file = silent, no error.
-const DOLL_SFX_URL = "/shoot.mp3";
+// Sounds in web/public/. Missing file = silent, no error.
+const START_MUSIC_URL = "/start.mp3"; // lobby loop until START
+const MOTION_SFX_URL = "/motion.mp3"; // loop while head swivels
+const DOLL_SFX_URL = "/shoot.mp3"; // one-shot when head finishes turning to RED
 
 // Squid-ish palette
 const PINK = "#ED1B76";
@@ -307,8 +308,10 @@ export default function RedLightGreenLight() {
   const headRef = useRef<HTMLDivElement>(null);
   const eyesRef = useRef<HTMLDivElement>(null);
 
-  // audio (unlocked on the START gesture)
+  const startMusicRef = useRef<HTMLAudioElement | null>(null);
+  const motionRef = useRef<HTMLAudioElement | null>(null);
   const sfxRef = useRef<HTMLAudioElement | null>(null);
+  const audioReadyRef = useRef(false);
 
   // tomato splats + which players have already burst
   const particlesRef = useRef<Particle[]>([]);
@@ -319,6 +322,55 @@ export default function RedLightGreenLight() {
     burstRef.current.clear();
   }
 
+  function unlockAllAudio() {
+    for (const a of [startMusicRef.current, motionRef.current, sfxRef.current]) {
+      if (!a) continue;
+      a.play()
+        .then(() => {
+          a.pause();
+          a.currentTime = 0;
+        })
+        .catch(() => {});
+    }
+    audioReadyRef.current = true;
+  }
+
+  function stopStartMusic() {
+    const a = startMusicRef.current;
+    if (!a) return;
+    a.pause();
+    a.currentTime = 0;
+  }
+
+  function playStartMusic() {
+    if (!audioReadyRef.current) return;
+    const a = startMusicRef.current;
+    if (!a || gameRef.current.running) return;
+    a.play().catch(() => {});
+  }
+
+  function stopMotion() {
+    const a = motionRef.current;
+    if (!a) return;
+    a.pause();
+    a.currentTime = 0;
+  }
+
+  function syncMotionAudio(phase: Phase, running: boolean) {
+    const motion = motionRef.current;
+    if (!motion || !audioReadyRef.current) return;
+    const turning = running && (phase === "TO_RED" || phase === "TO_GREEN");
+    if (turning) {
+      if (motion.paused) {
+        motion.currentTime = 0;
+        motion.play().catch(() => {});
+      }
+    } else if (!motion.paused) {
+      motion.pause();
+      motion.currentTime = 0;
+    }
+  }
+
   useEffect(() => {
     const video = videoRef.current!;
     const canvas = canvasRef.current!;
@@ -327,8 +379,24 @@ export default function RedLightGreenLight() {
     const cap = capRef.current;
     const capCtx = cap.getContext("2d")!;
 
+    startMusicRef.current = new Audio(START_MUSIC_URL);
+    startMusicRef.current.preload = "auto";
+    startMusicRef.current.loop = true;
+
+    motionRef.current = new Audio(MOTION_SFX_URL);
+    motionRef.current.preload = "auto";
+    motionRef.current.loop = true;
+
     sfxRef.current = new Audio(DOLL_SFX_URL);
     sfxRef.current.preload = "auto";
+
+    function onFirstGesture() {
+      if (audioReadyRef.current) return;
+      unlockAllAudio();
+      playStartMusic();
+    }
+    document.addEventListener("click", onFirstGesture);
+    document.addEventListener("keydown", onFirstGesture);
 
     let raf = 0;
     let stream: MediaStream | null = null;
@@ -493,12 +561,19 @@ export default function RedLightGreenLight() {
             const diag = Math.hypot(w, h);
             trackerRef.current.update(dets, diag);
             gameRef.current.tick(trackerRef.current, () => {
+              stopMotion();
               const a = sfxRef.current;
               if (a) {
                 a.currentTime = 0;
                 a.play().catch(() => {}); // missing file / not unlocked => silent
               }
             });
+            const game = gameRef.current;
+            if (game.running) syncMotionAudio(game.phase, true);
+            else {
+              stopMotion();
+              if (game.winner !== null) playStartMusic();
+            }
             gameRef.current.judge(trackerRef.current, h);
           })
           .catch(() => {})
@@ -515,25 +590,29 @@ export default function RedLightGreenLight() {
       stopped = true;
       cancelAnimationFrame(raf);
       stream?.getTracks().forEach((tr) => tr.stop());
+      document.removeEventListener("click", onFirstGesture);
+      document.removeEventListener("keydown", onFirstGesture);
+      stopStartMusic();
+      stopMotion();
     };
   }, []);
 
   function handleStart() {
-    // Unlock audio inside the user gesture so it can play later on its own.
-    const a = sfxRef.current;
-    if (a) {
-      a.play().then(() => { a.pause(); a.currentTime = 0; }).catch(() => {});
-    }
+    if (!audioReadyRef.current) unlockAllAudio();
+    stopStartMusic();
+    stopMotion();
     resetFx();
     trackerRef.current.reset();
     gameRef.current.start();
   }
 
   function handleRevive() {
+    stopMotion();
     resetFx();
     trackerRef.current.reset();
     gameRef.current.running = false;
     gameRef.current.winner = null;
+    playStartMusic();
   }
 
   return (
