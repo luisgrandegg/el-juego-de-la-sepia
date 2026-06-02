@@ -537,39 +537,47 @@ export default function RedLightGreenLight() {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: INK, color: PAPER, fontFamily: "system-ui, sans-serif" }}>
-      <div style={{ maxWidth: 960, margin: "0 auto", padding: "24px 16px" }}>
-        <h1 style={{ letterSpacing: 4, textTransform: "uppercase", fontSize: 22, margin: "0 0 4px" }}>
-          <span style={{ color: PINK }}>{"◯"}</span>{" "}
-          <span style={{ color: GUARD }}>{"△"}</span>{" "}
-          <span style={{ color: GOLD }}>{"▢"}</span>
-          &nbsp;Red Light · Green Light
-        </h1>
-        <p style={{ opacity: 0.7, margin: "0 0 16px", fontSize: 13 }}>
-          The doll faces away = move. She turns around = freeze. Move while she watches and it's tomato time.
-        </p>
+    <div
+      style={{
+        position: "relative",
+        height: "100vh",
+        width: "100vw",
+        overflow: "hidden",
+        background: "#000",
+        color: PAPER,
+        fontFamily: "system-ui, sans-serif",
+      }}
+    >
+      <video
+        ref={videoRef}
+        playsInline
+        muted
+        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }}
+      />
+      <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} />
 
-        <div style={{ position: "relative", width: "100%", aspectRatio: "4 / 3", background: "#000", borderRadius: 12, overflow: "hidden" }}>
-          <video
-            ref={videoRef}
-            playsInline
-            muted
-            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }}
-          />
-          <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} />
+      {/* The doll, watching from the corner */}
+      <Doll headRef={headRef} eyesRef={eyesRef} />
 
-          {/* The doll, watching from the corner */}
-          <Doll headRef={headRef} eyesRef={eyesRef} />
-        </div>
-
-        <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
-          <button onClick={handleStart} style={btn(PINK)}>
-            START / RESTART
-          </button>
-          <button onClick={handleRevive} style={btn("#3a3730")}>
-            REVIVE ALL
-          </button>
-        </div>
+      {/* Floating controls, left edge */}
+      <div
+        style={{
+          position: "absolute",
+          left: 16,
+          top: "50%",
+          transform: "translateY(-50%)",
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+          zIndex: 5,
+        }}
+      >
+        <button onClick={handleStart} style={btn(PINK)}>
+          START / RESTART
+        </button>
+        <button onClick={handleRevive} style={btn("#3a3730")}>
+          REVIVE ALL
+        </button>
       </div>
     </div>
   );
