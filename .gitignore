@@ -9,6 +9,9 @@ __pycache__/
 .venv/
 venv/
 
+# auto-downloaded model weights
+server/weights/
+
 # editor / os
 .DS_Store
 .vscode/

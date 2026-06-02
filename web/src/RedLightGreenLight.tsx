@@ -5,6 +5,10 @@
  * Webcam Squid Game. All game logic in TypeScript; person detection comes
  * from the tiny LibreYOLO service in ../server/detect_server.py.
  *
+ * The light cycle is shown by a doll that TURNS HER HEAD: facing away = green
+ * (move), facing the room = red (freeze). When her head finishes turning to
+ * the front, a sound plays and anyone who moved gets a tomato to the face.
+ *
  * LIVE-TUNING KNOBS are the CONFIG block below. The one you'll touch first
  * is MOVE_THRESH (how twitchy elimination is). Test it with 3-4 people
  * before the demo — a threshold tuned solo is always too strict for a group.
@@ -25,8 +29,13 @@ const EMA_ALPHA = 0.5; // centroid smoothing (higher = snappier, more jitter)
 const MATCH_FRAC = 0.18; // max match distance between frames, fraction of diagonal
 const MAX_MISSED = 12; // drop a track after this many missed detections
 
-const GREEN_RANGE: [number, number] = [2.0, 5.0]; // seconds
-const RED_RANGE: [number, number] = [1.8, 4.0]; // seconds
+const GREEN_RANGE: [number, number] = [2.0, 5.0]; // seconds head faces away
+const RED_RANGE: [number, number] = [1.8, 4.0]; // seconds head faces the room
+const TURN_S = 0.65; // how long the head takes to swivel each way
+
+// Sound played the instant her head finishes turning to the front (RED).
+// Lives in web/public/. Missing file = silent, no error.
+const DOLL_SFX_URL = "/shoot.mp3";
 
 // Squid-ish palette
 const PINK = "#ED1B76";
@@ -34,6 +43,7 @@ const GUARD = "#1FBF8F";
 const GOLD = "#FFC83D";
 const INK = "#14120b";
 const PAPER = "#f3f1ea";
+const TOMATO = "#e0341d";
 
 const now = () => performance.now() / 1000;
 type Box = [number, number, number, number];
@@ -128,36 +138,85 @@ class Tracker {
 
 // ----------------------------------------------------------------------
 // GAME STATE
+//
+// The doll drives the cycle. Phases:
+//   GREEN     head faces away, players may move
+//   TO_RED    head swiveling to face the room (still lenient)
+//   RED       head fully turned — freeze; movement judged here
+//   TO_GREEN  head swiveling back away
 // ----------------------------------------------------------------------
-type State = "GREEN" | "RED";
+type Phase = "GREEN" | "TO_RED" | "RED" | "TO_GREEN";
 
 class Game {
   running = false;
-  state: State = "GREEN";
-  until = 0;
+  phase: Phase = "GREEN";
+  private until = 0; // end of the current GREEN/RED dwell
+  private turnStart = 0; // start of the current TO_RED / TO_GREEN swivel
   winner: number | null = null;
 
   start() {
     this.running = true;
     this.winner = null;
-    this.enter("GREEN");
+    this.enterGreen();
   }
 
-  private enter(state: State) {
-    this.state = state;
-    const [lo, hi] = state === "GREEN" ? GREEN_RANGE : RED_RANGE;
+  private enterGreen() {
+    this.phase = "GREEN";
+    const [lo, hi] = GREEN_RANGE;
     this.until = now() + lo + Math.random() * (hi - lo);
   }
 
-  tick(tracker: Tracker) {
+  /**
+   * Advance the phase clock. `onFullyRed` fires once, the moment her head
+   * finishes turning to the front (play the sound there).
+   */
+  tick(tracker: Tracker, onFullyRed: () => void) {
     if (!this.running || this.winner !== null) return;
-    if (now() < this.until) return;
-    if (this.state === "GREEN") {
-      this.enter("RED");
-      for (const t of tracker.tracks) if (!t.eliminated) t.ref = [t.cx, t.cy];
-    } else {
-      this.enter("GREEN");
-      for (const t of tracker.tracks) t.ref = null;
+    const t = now();
+    switch (this.phase) {
+      case "GREEN":
+        if (t >= this.until) {
+          this.phase = "TO_RED";
+          this.turnStart = t;
+        }
+        break;
+      case "TO_RED":
+        if (t - this.turnStart >= TURN_S) {
+          this.phase = "RED";
+          const [lo, hi] = RED_RANGE;
+          this.until = t + lo + Math.random() * (hi - lo);
+          // Snap the freeze reference the instant she is fully turned.
+          for (const tr of tracker.tracks) if (!tr.eliminated) tr.ref = [tr.cx, tr.cy];
+          onFullyRed();
+        }
+        break;
+      case "RED":
+        if (t >= this.until) {
+          this.phase = "TO_GREEN";
+          this.turnStart = t;
+        }
+        break;
+      case "TO_GREEN":
+        if (t - this.turnStart >= TURN_S) {
+          this.enterGreen();
+          for (const tr of tracker.tracks) tr.ref = null;
+        }
+        break;
+    }
+  }
+
+  /** 0 = facing away (green), 1 = facing the room (red). For rendering. */
+  headFacing(): number {
+    const t = now();
+    switch (this.phase) {
+      case "GREEN":
+        return 0;
+      case "TO_RED":
+        return Math.min(1, (t - this.turnStart) / TURN_S);
+      case "RED":
+        return 1;
+      case "TO_GREEN":
+        return Math.max(0, 1 - (t - this.turnStart) / TURN_S);
     }
   }
 
@@ -171,7 +230,7 @@ class Game {
         this.running = false;
         return;
       }
-      if (this.state !== "RED") continue;
+      if (this.phase !== "RED") continue; // only judged while fully turned
       if (t.ref === null) {
         t.ref = [t.cx, t.cy]; // newcomer mid-red gets a lenient reference
         continue;
@@ -180,6 +239,57 @@ class Game {
       if (t.h > 0 && disp / t.h > MOVE_THRESH) t.eliminated = true;
     }
   }
+}
+
+// ----------------------------------------------------------------------
+// TOMATO PARTICLES
+// ----------------------------------------------------------------------
+interface Particle {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  r: number;
+  life: number; // seconds remaining
+  max: number; // initial life
+  color: string;
+}
+
+const TOMATO_SHADES = [TOMATO, "#c0271a", "#ff5b3a", "#a81e12"];
+
+function spawnSplat(particles: Particle[], x: number, y: number, scale: number) {
+  const n = 26;
+  for (let i = 0; i < n; i++) {
+    const ang = (Math.PI * 2 * i) / n + Math.random() * 0.5;
+    const speed = (60 + Math.random() * 200) * scale;
+    const life = 0.6 + Math.random() * 0.7;
+    particles.push({
+      x,
+      y,
+      vx: Math.cos(ang) * speed,
+      vy: Math.sin(ang) * speed - 40 * scale,
+      r: (3 + Math.random() * 7) * scale,
+      life,
+      max: life,
+      color: TOMATO_SHADES[i % TOMATO_SHADES.length],
+    });
+  }
+}
+
+function stepParticles(particles: Particle[], dt: number) {
+  const GRAV = 520;
+  for (const p of particles) {
+    p.life -= dt;
+    p.vy += GRAV * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+  }
+  // compact in place
+  let w = 0;
+  for (let r = 0; r < particles.length; r++) {
+    if (particles[r].life > 0) particles[w++] = particles[r];
+  }
+  particles.length = w;
 }
 
 // ----------------------------------------------------------------------
@@ -193,6 +303,22 @@ export default function RedLightGreenLight() {
   const gameRef = useRef(new Game());
   const dimsRef = useRef({ w: CAPTURE_W, h: Math.round((CAPTURE_W * 3) / 4) });
 
+  // doll head DOM (rotated each frame from the loop, no React re-render)
+  const headRef = useRef<HTMLDivElement>(null);
+  const eyesRef = useRef<HTMLDivElement>(null);
+
+  // audio (unlocked on the START gesture)
+  const sfxRef = useRef<HTMLAudioElement | null>(null);
+
+  // tomato splats + which players have already burst
+  const particlesRef = useRef<Particle[]>([]);
+  const burstRef = useRef<Set<number>>(new Set());
+
+  function resetFx() {
+    particlesRef.current.length = 0;
+    burstRef.current.clear();
+  }
+
   useEffect(() => {
     const video = videoRef.current!;
     const canvas = canvasRef.current!;
@@ -201,10 +327,14 @@ export default function RedLightGreenLight() {
     const cap = capRef.current;
     const capCtx = cap.getContext("2d")!;
 
+    sfxRef.current = new Audio(DOLL_SFX_URL);
+    sfxRef.current.preload = "auto";
+
     let raf = 0;
     let stream: MediaStream | null = null;
     let inFlight = false;
     let lastDetect = 0;
+    let lastFrame = performance.now();
     let stopped = false;
 
     navigator.mediaDevices
@@ -252,17 +382,26 @@ export default function RedLightGreenLight() {
       ctx.lineWidth = t.won || t.eliminated ? 4 : 2;
       ctx.strokeStyle = color;
       ctx.strokeRect(mx1, y1, mx2 - mx1, y2 - y1);
-      const label = t.won ? `P${t.id} WINNER` : t.eliminated ? `P${t.id} OUT` : `P${t.id}`;
+      const label = t.won ? `P${t.id} WINNER` : t.eliminated ? `P${t.id} SPLAT` : `P${t.id}`;
       ctx.font = "bold 14px system-ui, sans-serif";
       ctx.fillStyle = color;
       ctx.fillText(label, mx1, Math.max(14, y1 - 6));
+
+      // Persistent tomato stain on eliminated players (deterministic per id).
       if (t.eliminated) {
-        ctx.beginPath();
-        ctx.moveTo(mx1, y1);
-        ctx.lineTo(mx2, y2);
-        ctx.moveTo(mx2, y1);
-        ctx.lineTo(mx1, y2);
-        ctx.stroke();
+        const cx = (mx1 + mx2) / 2;
+        const cy = y1 + (y2 - y1) * 0.28;
+        const rr = Math.max(10, (mx2 - mx1) * 0.22);
+        ctx.globalAlpha = 0.55;
+        for (let i = 0; i < 5; i++) {
+          const a = (i * 2.3 + t.id) % (Math.PI * 2);
+          const d = rr * (0.2 + ((i * 7 + t.id) % 5) / 6);
+          ctx.fillStyle = TOMATO_SHADES[i % TOMATO_SHADES.length];
+          ctx.beginPath();
+          ctx.arc(cx + Math.cos(a) * d, cy + Math.sin(a) * d, rr * 0.45, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
       }
     }
 
@@ -271,29 +410,68 @@ export default function RedLightGreenLight() {
       const tracker = trackerRef.current;
       const W = canvas.width;
       const H = canvas.height;
+      const tn = performance.now();
+      const dt = Math.min(0.05, (tn - lastFrame) / 1000);
+      lastFrame = tn;
+
       ctx.clearRect(0, 0, W, H);
+
+      // newly-eliminated players burst a tomato
+      for (const t of tracker.tracks) {
+        if (t.eliminated && !burstRef.current.has(t.id)) {
+          burstRef.current.add(t.id);
+          const [x1, y1, x2, y2] = t.box;
+          const cx = W - (x1 + x2) / 2;
+          const cy = y1 + (y2 - y1) * 0.28;
+          spawnSplat(particlesRef.current, cx, cy, Math.max(0.7, (x2 - x1) / 120));
+        }
+      }
 
       for (const t of tracker.tracks) drawTrack(t, W);
 
-      // Top banner
-      if (game.running) {
-        const red = game.state === "RED";
-        const bar = Math.round(H * 0.14);
-        ctx.fillStyle = red ? PINK : GUARD;
-        ctx.globalAlpha = 0.82;
-        ctx.fillRect(0, 0, W, bar);
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = PAPER;
-        ctx.font = `bold ${Math.round(bar * 0.42)}px system-ui, sans-serif`;
-        ctx.fillText(red ? "RED LIGHT  \u25EF FREEZE" : "GREEN LIGHT  \u25B3 MOVE", 16, bar * 0.62);
+      // tomato particles on top of the boxes
+      stepParticles(particlesRef.current, dt);
+      for (const p of particlesRef.current) {
+        ctx.globalAlpha = Math.max(0, Math.min(1, p.life / p.max));
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      // drive the doll's head (DOM, smooth every frame)
+      const hf = game.running ? game.headFacing() : 0;
+      if (headRef.current) {
+        headRef.current.style.transform = `rotateY(${180 * (1 - hf)}deg)`;
+      }
+      if (eyesRef.current) {
+        // eyes glow red as she comes around to face the room
+        eyesRef.current.style.opacity = hf > 0.55 ? "1" : "0";
+        eyesRef.current.style.boxShadow = hf > 0.85 ? `0 0 14px 4px ${PINK}` : "none";
+      }
+
+      // a red vignette while frozen, for drama
+      if (game.running && hf > 0.9) {
+        ctx.save();
+        const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.75);
+        g.addColorStop(0, "rgba(237,27,118,0)");
+        g.addColorStop(1, "rgba(237,27,118,0.28)");
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+        ctx.restore();
       }
 
       // Bottom HUD
       const alive = tracker.tracks.filter((t) => !t.eliminated).length;
       let msg: string;
       if (!game.running && game.winner === null) msg = "press START";
-      else if (game.winner !== null) msg = `P${game.winner} WINS! \u2014 press START to replay`;
-      else msg = `${game.state}  ${Math.max(0, game.until - now()).toFixed(1)}s   alive: ${alive}`;
+      else if (game.winner !== null) msg = `P${game.winner} WINS! — press START to replay`;
+      else {
+        const label =
+          game.phase === "GREEN" ? "GREEN — move" : game.phase === "RED" ? "RED — freeze!" : "…turning…";
+        msg = `${label}   alive: ${alive}`;
+      }
       ctx.font = "bold 15px system-ui, sans-serif";
       const tw = ctx.measureText(msg).width;
       ctx.fillStyle = INK;
@@ -314,7 +492,13 @@ export default function RedLightGreenLight() {
             const { w, h } = dimsRef.current;
             const diag = Math.hypot(w, h);
             trackerRef.current.update(dets, diag);
-            gameRef.current.tick(trackerRef.current);
+            gameRef.current.tick(trackerRef.current, () => {
+              const a = sfxRef.current;
+              if (a) {
+                a.currentTime = 0;
+                a.play().catch(() => {}); // missing file / not unlocked => silent
+              }
+            });
             gameRef.current.judge(trackerRef.current, h);
           })
           .catch(() => {})
@@ -334,17 +518,35 @@ export default function RedLightGreenLight() {
     };
   }, []);
 
+  function handleStart() {
+    // Unlock audio inside the user gesture so it can play later on its own.
+    const a = sfxRef.current;
+    if (a) {
+      a.play().then(() => { a.pause(); a.currentTime = 0; }).catch(() => {});
+    }
+    resetFx();
+    trackerRef.current.reset();
+    gameRef.current.start();
+  }
+
+  function handleRevive() {
+    resetFx();
+    trackerRef.current.reset();
+    gameRef.current.running = false;
+    gameRef.current.winner = null;
+  }
+
   return (
     <div style={{ minHeight: "100vh", background: INK, color: PAPER, fontFamily: "system-ui, sans-serif" }}>
       <div style={{ maxWidth: 960, margin: "0 auto", padding: "24px 16px" }}>
         <h1 style={{ letterSpacing: 4, textTransform: "uppercase", fontSize: 22, margin: "0 0 4px" }}>
-          <span style={{ color: PINK }}>{"\u25EF"}</span>{" "}
-          <span style={{ color: GUARD }}>{"\u25B3"}</span>{" "}
-          <span style={{ color: GOLD }}>{"\u25A2"}</span>
+          <span style={{ color: PINK }}>{"◯"}</span>{" "}
+          <span style={{ color: GUARD }}>{"△"}</span>{" "}
+          <span style={{ color: GOLD }}>{"▢"}</span>
           &nbsp;Red Light · Green Light
         </h1>
         <p style={{ opacity: 0.7, margin: "0 0 16px", fontSize: 13 }}>
-          Green = move toward the camera. Red = freeze. First to reach the camera wins.
+          The doll faces away = move. She turns around = freeze. Move while she watches and it's tomato time.
         </p>
 
         <div style={{ position: "relative", width: "100%", aspectRatio: "4 / 3", background: "#000", borderRadius: 12, overflow: "hidden" }}>
@@ -355,24 +557,123 @@ export default function RedLightGreenLight() {
             style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }}
           />
           <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} />
+
+          {/* The doll, watching from the corner */}
+          <Doll headRef={headRef} eyesRef={eyesRef} />
         </div>
 
         <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
-          <button onClick={() => gameRef.current.start()} style={btn(PINK)}>
+          <button onClick={handleStart} style={btn(PINK)}>
             START / RESTART
           </button>
-          <button
-            onClick={() => {
-              trackerRef.current.reset();
-              gameRef.current.running = false;
-              gameRef.current.winner = null;
-            }}
-            style={btn("#3a3730")}
-          >
+          <button onClick={handleRevive} style={btn("#3a3730")}>
             REVIVE ALL
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------
+// DOLL  (pure CSS/divs; the head is a 3D flip-card driven from the loop)
+// ----------------------------------------------------------------------
+function Doll({
+  headRef,
+  eyesRef,
+}: {
+  headRef: React.RefObject<HTMLDivElement>;
+  eyesRef: React.RefObject<HTMLDivElement>;
+}) {
+  const SKIN = "#f4d9b0";
+  const HAIR = "#3a2a1a";
+  const DRESS = "#f4a93b";
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 10,
+        right: 10,
+        width: 96,
+        padding: "8px 8px 10px",
+        borderRadius: 10,
+        background: "rgba(20,18,11,0.55)",
+        border: `2px solid ${GOLD}`,
+        backdropFilter: "blur(2px)",
+        textAlign: "center",
+      }}
+    >
+      <div style={{ perspective: 320, height: 64, display: "flex", justifyContent: "center", alignItems: "flex-end" }}>
+        <div
+          ref={headRef}
+          style={{
+            position: "relative",
+            width: 52,
+            height: 56,
+            transformStyle: "preserve-3d",
+            transform: "rotateY(180deg)",
+            transition: "none",
+          }}
+        >
+          {/* FRONT of head — face */}
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              backfaceVisibility: "hidden",
+              WebkitBackfaceVisibility: "hidden",
+              borderRadius: "46% 46% 44% 44%",
+              background: SKIN,
+              border: `3px solid ${HAIR}`,
+              boxSizing: "border-box",
+            }}
+          >
+            <div
+              ref={eyesRef}
+              style={{
+                position: "absolute",
+                top: 22,
+                left: 0,
+                right: 0,
+                display: "flex",
+                justifyContent: "center",
+                gap: 10,
+                opacity: 0,
+              }}
+            >
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: PINK }} />
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: PINK }} />
+            </div>
+            {/* rosy cheeks + mouth */}
+            <span style={{ position: "absolute", top: 33, left: 6, width: 9, height: 6, borderRadius: "50%", background: "#e98", opacity: 0.7 }} />
+            <span style={{ position: "absolute", top: 33, right: 6, width: 9, height: 6, borderRadius: "50%", background: "#e98", opacity: 0.7 }} />
+            <span style={{ position: "absolute", top: 41, left: "50%", transform: "translateX(-50%)", width: 10, height: 5, borderBottom: `2px solid ${HAIR}`, borderRadius: "0 0 8px 8px" }} />
+            {/* bangs */}
+            <span style={{ position: "absolute", top: -3, left: -3, right: -3, height: 16, background: HAIR, borderRadius: "46% 46% 30% 30%" }} />
+          </div>
+
+          {/* BACK of head — just hair + a bun */}
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              backfaceVisibility: "hidden",
+              WebkitBackfaceVisibility: "hidden",
+              transform: "rotateY(180deg)",
+              borderRadius: "46% 46% 44% 44%",
+              background: HAIR,
+            }}
+          >
+            <span style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", width: 22, height: 22, borderRadius: "50%", background: "#2c2013" }} />
+          </div>
+        </div>
+      </div>
+      {/* pigtails */}
+      <span style={{ position: "absolute", top: 30, left: 2, width: 14, height: 14, borderRadius: "50%", background: HAIR }} />
+      <span style={{ position: "absolute", top: 30, right: 2, width: 14, height: 14, borderRadius: "50%", background: HAIR }} />
+      {/* dress */}
+      <div style={{ marginTop: 2, height: 22, background: DRESS, borderRadius: "6px 6px 4px 4px" }} />
+      <div style={{ marginTop: 4, fontSize: 9, letterSpacing: 1, color: GOLD, fontWeight: 700 }}>YOUNG-HEE</div>
     </div>
   );
 }
