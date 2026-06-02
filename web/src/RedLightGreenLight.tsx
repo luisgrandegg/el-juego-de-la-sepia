@@ -25,7 +25,7 @@ const DETECT_INTERVAL_MS = 120; // throttle detection; draw runs every frame
 
 const MOVE_THRESH = 0.04; // eliminate if moved more than this * body height
 const WIN_RATIO = 0.85; // box height / frame height that counts as "reached camera"
-const EMA_ALPHA = 0.8; // centroid smoothing (higher = snappier, more jitter)
+const EMA_ALPHA = 0.6; // centroid smoothing (higher = snappier, more jitter)
 const MATCH_FRAC = 0.18; // max match distance between frames, fraction of diagonal
 const MAX_MISSED = 12; // drop a track after this many missed detections
 
@@ -285,7 +285,12 @@ interface Particle {
 
 const TOMATO_SHADES = [TOMATO, "#c0271a", "#ff5b3a", "#a81e12"];
 
-function spawnSplat(particles: Particle[], x: number, y: number, scale: number) {
+function spawnSplat(
+  particles: Particle[],
+  x: number,
+  y: number,
+  scale: number,
+) {
   const n = 26;
   for (let i = 0; i < n; i++) {
     const ang = (Math.PI * 2 * i) / n + Math.random() * 0.5;
@@ -356,7 +361,11 @@ export default function RedLightGreenLight() {
   }
 
   function unlockAllAudio() {
-    for (const a of [startMusicRef.current, motionRef.current, sfxRef.current]) {
+    for (const a of [
+      startMusicRef.current,
+      motionRef.current,
+      sfxRef.current,
+    ]) {
       if (!a) continue;
       a.play()
         .then(() => {
@@ -559,7 +568,11 @@ export default function RedLightGreenLight() {
       ctx.lineWidth = t.won || t.eliminated ? 4 : 2;
       ctx.strokeStyle = color;
       ctx.strokeRect(mx1, y1, mx2 - mx1, y2 - y1);
-      const label = t.won ? `P${t.id} WINNER` : t.eliminated ? `P${t.id} SPLAT` : `P${t.id}`;
+      const label = t.won
+        ? `P${t.id} WINNER`
+        : t.eliminated
+          ? `P${t.id} SPLAT`
+          : `P${t.id}`;
       ctx.font = "bold 14px system-ui, sans-serif";
       ctx.fillStyle = color;
       ctx.fillText(label, mx1, Math.max(14, y1 - 6));
@@ -575,7 +588,13 @@ export default function RedLightGreenLight() {
           const d = rr * (0.2 + ((i * 7 + t.id) % 5) / 6);
           ctx.fillStyle = TOMATO_SHADES[i % TOMATO_SHADES.length];
           ctx.beginPath();
-          ctx.arc(cx + Math.cos(a) * d, cy + Math.sin(a) * d, rr * 0.45, 0, Math.PI * 2);
+          ctx.arc(
+            cx + Math.cos(a) * d,
+            cy + Math.sin(a) * d,
+            rr * 0.45,
+            0,
+            Math.PI * 2,
+          );
           ctx.fill();
         }
         ctx.globalAlpha = 1;
@@ -632,7 +651,12 @@ export default function RedLightGreenLight() {
           const [x1, y1, x2, y2] = t.box;
           const cx = W - (x1 + x2) / 2;
           const cy = y1 + (y2 - y1) * 0.28;
-          spawnSplat(particlesRef.current, cx, cy, Math.max(0.7, (x2 - x1) / 120));
+          spawnSplat(
+            particlesRef.current,
+            cx,
+            cy,
+            Math.max(0.7, (x2 - x1) / 120),
+          );
         }
       }
 
@@ -657,13 +681,21 @@ export default function RedLightGreenLight() {
       if (eyesRef.current) {
         // eyes glow red as she comes around to face the room
         eyesRef.current.style.opacity = hf > 0.55 ? "1" : "0";
-        eyesRef.current.style.boxShadow = hf > 0.85 ? `0 0 14px 4px ${PINK}` : "none";
+        eyesRef.current.style.boxShadow =
+          hf > 0.85 ? `0 0 14px 4px ${PINK}` : "none";
       }
 
       // a red vignette while frozen, for drama
       if (game.running && hf > 0.9) {
         ctx.save();
-        const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.75);
+        const g = ctx.createRadialGradient(
+          W / 2,
+          H / 2,
+          H * 0.3,
+          W / 2,
+          H / 2,
+          H * 0.75,
+        );
         g.addColorStop(0, "rgba(237,27,118,0)");
         g.addColorStop(1, "rgba(237,27,118,0.28)");
         ctx.fillStyle = g;
@@ -675,10 +707,15 @@ export default function RedLightGreenLight() {
       const alive = tracker.tracks.filter((t) => !t.eliminated).length;
       let msg: string;
       if (!game.running && game.winner === null) msg = "press START";
-      else if (game.winner !== null) msg = `P${game.winner} WINS! — press START to replay`;
+      else if (game.winner !== null)
+        msg = `P${game.winner} WINS! — press START to replay`;
       else {
         const label =
-          game.phase === "GREEN" ? "GREEN — move" : game.phase === "RED" ? "RED — freeze!" : "…turning…";
+          game.phase === "GREEN"
+            ? "GREEN — move"
+            : game.phase === "RED"
+              ? "RED — freeze!"
+              : "…turning…";
         msg = `${label}   alive: ${alive}`;
       }
       ctx.font = "bold 15px system-ui, sans-serif";
@@ -693,7 +730,11 @@ export default function RedLightGreenLight() {
 
     function loop() {
       const t = performance.now();
-      if (!inFlight && t - lastDetect >= DETECT_INTERVAL_MS && video.readyState >= 2) {
+      if (
+        !inFlight &&
+        t - lastDetect >= DETECT_INTERVAL_MS &&
+        video.readyState >= 2
+      ) {
         inFlight = true;
         lastDetect = t;
         detect()
@@ -754,9 +795,25 @@ export default function RedLightGreenLight() {
         ref={videoRef}
         playsInline
         muted
-        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }}
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          objectFit: "cover",
+          transform: "scaleX(-1)",
+        }}
       />
-      <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", imageRendering: "pixelated" }} />
+      <canvas
+        ref={canvasRef}
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          imageRendering: "pixelated",
+        }}
+      />
 
       <Doll headRef={headRef} eyesRef={eyesRef} />
 
@@ -780,7 +837,12 @@ export default function RedLightGreenLight() {
         </button>
       </div>
 
-      {introVisible && <IntroSplash onActivateMusic={unlockIntroMusic} onStart={handleStartFromIntro} />}
+      {introVisible && (
+        <IntroSplash
+          onActivateMusic={unlockIntroMusic}
+          onStart={handleStartFromIntro}
+        />
+      )}
     </div>
   );
 }
@@ -848,7 +910,8 @@ function IntroSplash({
           color: "rgba(243,241,234,0.75)",
         }}
       >
-        Luz verde: acércate a la cámara. Luz roja: no te muevas. Si la muñeca te pilla, tomate en la cara.
+        Luz verde: acércate a la cámara. Luz roja: no te muevas. Si la muñeca te
+        pilla, tomate en la cara.
       </p>
       <button
         type="button"
@@ -856,7 +919,13 @@ function IntroSplash({
           e.stopPropagation();
           onStart();
         }}
-        style={{ ...btn(PINK), marginTop: 8, fontSize: 16, padding: "14px 36px", cursor: "pointer" }}
+        style={{
+          ...btn(PINK),
+          marginTop: 8,
+          fontSize: 16,
+          padding: "14px 36px",
+          cursor: "pointer",
+        }}
       >
         START
       </button>
@@ -897,7 +966,15 @@ function Doll({
         transformOrigin: "top right",
       }}
     >
-      <div style={{ perspective: 320, height: 64, display: "flex", justifyContent: "center", alignItems: "flex-end" }}>
+      <div
+        style={{
+          perspective: 320,
+          height: 64,
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "flex-end",
+        }}
+      >
         <div
           ref={headRef}
           style={{
@@ -935,15 +1012,72 @@ function Doll({
                 opacity: 0,
               }}
             >
-              <span style={{ width: 8, height: 8, borderRadius: "50%", background: PINK }} />
-              <span style={{ width: 8, height: 8, borderRadius: "50%", background: PINK }} />
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  background: PINK,
+                }}
+              />
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  background: PINK,
+                }}
+              />
             </div>
             {/* rosy cheeks + mouth */}
-            <span style={{ position: "absolute", top: 33, left: 6, width: 9, height: 6, borderRadius: "50%", background: "#e98", opacity: 0.7 }} />
-            <span style={{ position: "absolute", top: 33, right: 6, width: 9, height: 6, borderRadius: "50%", background: "#e98", opacity: 0.7 }} />
-            <span style={{ position: "absolute", top: 41, left: "50%", transform: "translateX(-50%)", width: 10, height: 5, borderBottom: `2px solid ${HAIR}`, borderRadius: "0 0 8px 8px" }} />
+            <span
+              style={{
+                position: "absolute",
+                top: 33,
+                left: 6,
+                width: 9,
+                height: 6,
+                borderRadius: "50%",
+                background: "#e98",
+                opacity: 0.7,
+              }}
+            />
+            <span
+              style={{
+                position: "absolute",
+                top: 33,
+                right: 6,
+                width: 9,
+                height: 6,
+                borderRadius: "50%",
+                background: "#e98",
+                opacity: 0.7,
+              }}
+            />
+            <span
+              style={{
+                position: "absolute",
+                top: 41,
+                left: "50%",
+                transform: "translateX(-50%)",
+                width: 10,
+                height: 5,
+                borderBottom: `2px solid ${HAIR}`,
+                borderRadius: "0 0 8px 8px",
+              }}
+            />
             {/* bangs */}
-            <span style={{ position: "absolute", top: -3, left: -3, right: -3, height: 16, background: HAIR, borderRadius: "46% 46% 30% 30%" }} />
+            <span
+              style={{
+                position: "absolute",
+                top: -3,
+                left: -3,
+                right: -3,
+                height: 16,
+                background: HAIR,
+                borderRadius: "46% 46% 30% 30%",
+              }}
+            />
           </div>
 
           {/* BACK of head — just hair + a bun */}
@@ -958,16 +1092,64 @@ function Doll({
               background: HAIR,
             }}
           >
-            <span style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", width: 22, height: 22, borderRadius: "50%", background: "#2c2013" }} />
+            <span
+              style={{
+                position: "absolute",
+                top: 12,
+                left: "50%",
+                transform: "translateX(-50%)",
+                width: 22,
+                height: 22,
+                borderRadius: "50%",
+                background: "#2c2013",
+              }}
+            />
           </div>
         </div>
       </div>
       {/* pigtails */}
-      <span style={{ position: "absolute", top: 30, left: 2, width: 14, height: 14, borderRadius: "50%", background: HAIR }} />
-      <span style={{ position: "absolute", top: 30, right: 2, width: 14, height: 14, borderRadius: "50%", background: HAIR }} />
+      <span
+        style={{
+          position: "absolute",
+          top: 30,
+          left: 2,
+          width: 14,
+          height: 14,
+          borderRadius: "50%",
+          background: HAIR,
+        }}
+      />
+      <span
+        style={{
+          position: "absolute",
+          top: 30,
+          right: 2,
+          width: 14,
+          height: 14,
+          borderRadius: "50%",
+          background: HAIR,
+        }}
+      />
       {/* dress */}
-      <div style={{ marginTop: 2, height: 22, background: DRESS, borderRadius: "6px 6px 4px 4px" }} />
-      <div style={{ marginTop: 4, fontSize: 9, letterSpacing: 1, color: GOLD, fontWeight: 700 }}>YOUNG-HEE</div>
+      <div
+        style={{
+          marginTop: 2,
+          height: 22,
+          background: DRESS,
+          borderRadius: "6px 6px 4px 4px",
+        }}
+      />
+      <div
+        style={{
+          marginTop: 4,
+          fontSize: 9,
+          letterSpacing: 1,
+          color: GOLD,
+          fontWeight: 700,
+        }}
+      >
+        YOUNG-HEE
+      </div>
     </div>
   );
 }
